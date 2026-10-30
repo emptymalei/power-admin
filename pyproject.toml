@@ -1,7 +1,7 @@
 [project]
 name = "power-admin"
-version = "0.1.0"
-description = "Pull Power Platform admin data (inventory, capacity, Copilot credits, users) to a local folder or S3."
+version = "0.2.0"
+description = "Pull Power Platform admin data (inventory, agent activity, capacity, Copilot credits, users) to a local folder or S3."
 readme = "README.md"
 license = "MIT"
 keywords = ["power-platform", "copilot-studio", "power-apps", "power-automate", "admin", "inventory", "governance"]
@@ -17,6 +17,7 @@ dependencies = [
     "msal>=1.28",
     "requests>=2.31",
     "cloudpathlib[s3]>=0.18",
+    "pyyaml>=6",
 ]
 
 [project.urls]

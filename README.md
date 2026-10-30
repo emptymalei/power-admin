@@ -4,13 +4,25 @@ A small CLI that signs in to your Microsoft tenant and pulls Power Platform admi
 
 > Community tool. Not affiliated with or endorsed by Microsoft.
 
-| Dataset | What's in it | Source |
-| --- | --- | --- |
-| `environments` | Environments, their type and region, Dataverse details | Power Platform API `environmentmanagement` |
-| `inventory`, `agents`, `apps`, `flows` | Every canvas, model-driven and code app, every cloud and agent flow, and every Copilot Studio agent, joined to its environment | Power Platform inventory API (`PowerPlatformResources`) |
-| `capacity`, `capacity_raw`, `currency` | Tenant storage and API capacity, plus purchased, allocated and consumed amounts per currency (Copilot credits, AI Builder and others) | Power Platform API `licensing/tenantCapacity` |
-| `agent_credits` | Copilot credit consumption per agent and environment for a date range, with agent names attached | Power Platform API `licensing/entitlements/{id}/resources` |
-| `users`, `licenses`, `user_licenses` | Entra users, the tenant's license SKUs, and which user has which SKU | Microsoft Graph |
+Run `power-admin datasets` to see every collector. Each one writes one or more datasets:
+
+| Collector | Datasets | What's in them | Source |
+| --- | --- | --- | --- |
+| `environments` | `environments` | Environments with type, region and Dataverse URL | Power Platform API |
+| `inventory` | `inventory`, `agents`, `apps`, `flows`, `connectors`, `environment_groups`, `inventory_environments` | Every app, flow, Copilot Studio agent and connector, with owner, dates and connectors used, joined to its environment | Power Platform inventory API |
+| `capacity` | `capacity`, `capacity_raw`, `currency` | Storage and API capacity, plus purchased, allocated and consumed amounts per currency (Copilot credits, AI Builder and others) | Power Platform API, licensing |
+| `allocations` | `currency_allocations`, `billing_policies` | Credits allocated to each environment, the enforcement rules (alert, deny, pay-as-you-go), and billing policies | Power Platform API, licensing |
+| `dataverse` | `dataverse_agents`, `agent_components`, `agent_sessions`, `agent_sessions_daily` | **Agent details** (state, publish date, authentication, language), each agent's topics, tools and knowledge sources, and **activity history**: one row per conversation session, plus daily session counts per agent | Each environment's Dataverse (`bot`, `botcomponent`, `conversationtranscript` tables) |
+| `credits` | `agent_credits`, `agent_credits_summary`, `user_credits`, `credit_license_trends` | **Credit usage history**: Copilot credits consumed per agent and per user for each month (or day) in the date range, a per-agent total, and license and capacity trends | Power Platform API, licensing insights |
+| `advisor` | `advisor_recommendations`, `advisor_resources` | The admin center's **Actions** recommendations (for example unused apps or ownerless resources) and every resource they affect, including unique users over the last 30 days | Power Platform API, analytics |
+| `rbac` | `role_assignments` | Power Platform role assignments | Power Platform API, authorization (preview) |
+| `users` | `users`, `licenses`, `user_licenses` | Entra users, the tenant's license SKUs, and which user has which SKU | Microsoft Graph |
+| `admin_roles` | `admin_roles` | Members of each activated Entra admin role | Microsoft Graph |
+| `flow_runs` *(opt-in)* | `cloud_flows`, `flow_runs` | Cloud flows per environment and their run history | Power Platform API, Power Automate |
+| `audit` *(opt-in)* | `audit_events` | Purview audit events for Power Apps, Power Automate, Power Pages and admin actions, such as app launches, flow edits and DLP changes | Microsoft Graph audit log query API |
+| `sign_ins` *(opt-in)* | `user_sign_ins` | Last sign-in date per user | Microsoft Graph |
+
+Opt-in collectors are slow or need extra permissions. Turn them on with `--include audit` or `include: [audit]` in the config.
 
 ## Install
 
@@ -66,8 +78,11 @@ Tokens last about an hour.
 power-admin login                       # opens a browser; the sign-in is cached in ~/.power-admin
 power-admin pull                        # everything, credits from the 1st of last month to today
 power-admin pull -o s3://my-bucket/power-platform --aws-profile admin
-power-admin pull --only credits --from 2026-10-01 --to 2026-10-31
+power-admin pull --only credits --from 2026-01-01   # credit history, one row per agent per month
+power-admin pull --include audit --include flow_runs
+power-admin pull -e <environment-id>    # limit per-environment collectors (dataverse, flow_runs)
 power-admin pull --skip users -f csv    # CSV only
+power-admin pull -C power-admin.yaml -p monthly     # reuse a saved profile
 power-admin datasets                    # list what can be pulled
 power-admin status                      # show settings and who's signed in
 power-admin logout
@@ -86,9 +101,37 @@ Every run adds a new `snapshot_date`, so you build up history. If any dataset fa
 
 S3 uploads use the normal AWS credential chain, or the profile you pass with `--aws-profile`. Run `aws sso login --profile admin` first if you use SSO.
 
+## Config files and profiles
+
+All settings can live in a YAML file, so you can reuse them across runs. Run `power-admin init-config` to write a commented template to `power-admin.yaml`.
+
+```yaml
+tenant_id: contoso.onmicrosoft.com
+output: ./power-admin-output
+include: [audit]
+credit_granularity: month        # month | day | none
+transcript_content: false        # true also saves each session's conversation text
+
+profiles:
+  monthly:
+    output: s3://my-bucket/power-platform
+    aws_profile: admin
+  automation:
+    extends: monthly             # inherit everything from monthly
+    auth: client-secret
+    client_id: 00000000-0000-0000-0000-000000000000
+```
+
+- **Where the file is read from:** `-C file.yaml`, or `POWER_ADMIN_CONFIG`, or `~/.power-admin/config.yaml`.
+- **Picking a profile:** `-p NAME` or `POWER_ADMIN_PROFILE`.
+- **Precedence:** top-level keys < the profile (and whatever it `extends`) < `POWER_ADMIN_<KEY>` environment variables < command-line flags.
+- **Checking the result:** `power-admin show-config -p monthly` prints the merged settings.
+- **Saving from the command line:** `power-admin configure --profile monthly --output s3://...` writes to the file.
+- **Secrets are never written to the file.** Pass a client secret through `POWER_ADMIN_CLIENT_SECRET`.
+
 ## Auth modes
 
-Pick a mode with `--auth` / `-a`, or set it in `power-admin configure` or with `POWER_ADMIN_AUTH_MODE`.
+Pick a mode with `--auth` / `-a`, or with `auth:` in the config file, or with `POWER_ADMIN_AUTH`.
 
 | Mode | When to use | Needs |
 | --- | --- | --- |
@@ -104,11 +147,19 @@ How the app-only modes (`client-secret`, `certificate`) differ:
 
 For monthly manual runs, `interactive` is the simplest option.
 
+## Permissions per collector
+
+The default sign-in (the Azure PowerShell client) covers the Power Platform API, Graph users and licenses, and Dataverse. The collectors that need more:
+- **`dataverse`**: your account needs read access to each environment's Dataverse, for example the System Administrator role there. Environments you can't read are skipped and logged. Sessions come from the ConversationTranscript table, which keeps 30 days by default unless you've extended retention.
+- **`admin_roles`**: needs `RoleManagement.Read.Directory` or `Directory.Read.All` (Global Reader works).
+- **`audit`**: needs `AuditLogsQuery.Read.All`, which the default client usually doesn't have. Register your own app with that delegated Graph permission and pass `--client-id`. Each query runs on Microsoft's side and can take several minutes.
+- **`sign_ins`**: needs `AuditLog.Read.All` and Entra ID P1.
+
 ## Caveats
 
-- **The per-agent credit endpoints may change or fail.** They are marked *deprecated* in the Power Platform API reference but still documented. The entitlement ID `MCSMessages` (Copilot credits) is our best reading of the docs and hasn't been tested against a live tenant yet; if you get a 400 or 404, try `--credit-entitlement` with another value. Whatever happens, the admin center's **Licensing > Copilot Studio > Download report** remains the authoritative source.
-- **Several licensing APIs are still in preview**, so their field names may change. JSONL keeps the full raw response; CSV flattens nested fields into `a.b.c` columns.
-- **Usage metrics are missing.** Per-app users, per-flow runs and per-agent sessions from the admin center's Usage page don't have a public API yet.
+- **The credit history endpoints may change or fail.** The per-agent and per-user endpoints are marked *deprecated* in the Power Platform API reference but still documented. The entitlement ID `MCSMessages` (Copilot credits) is our best reading of the docs and hasn't been tested against a live tenant yet. If you get a 400 or 404, set `credit_entitlements` to other values, for example `[MCSMessages, MCSSessions]`. Whatever happens, the admin center's **Licensing > Copilot Studio > Download report** remains the authoritative source.
+- **Several APIs are still in preview** (licensing, RBAC, advisor), so their field names may change. JSONL keeps the full raw response; CSV flattens nested fields into `a.b.c` columns.
+- **Some usage metrics are missing.** The admin center's Usage page (per-app users) has no public API. The closest stand-ins are `advisor_resources.resourceUsage`, `audit` app-launch events, `agent_sessions` and `flow_runs`.
 
 ## Querying in Athena (optional)
 
@@ -132,7 +183,7 @@ uv run pytest
 
 ## Releasing
 
-CI runs the tests on every push and pull request. Publishing a GitHub release whose tag is `v<version>` (for example `v0.1.0`, matching `version` in `pyproject.toml`) builds the package and uploads it to PyPI.
+CI runs the tests on every push and pull request. Publishing a GitHub release whose tag is `v<version>` (for example `v0.2.0`, matching `version` in `pyproject.toml`) builds the package and uploads it to PyPI.
 
 The release uses PyPI trusted publishing, so no token is stored in GitHub. One-time setup:
 1. Add a pending publisher on PyPI under **Your account > Publishing**, with project `power-admin`, owner `emptymalei`, repository `power-admin`, workflow `release.yml` and environment `pypi`.

@@ -66,7 +66,7 @@ class TokenProvider:
 
     @property
     def mode(self) -> str:
-        return self.settings.auth_mode
+        return self.settings.auth
 
     @property
     def is_delegated(self) -> bool:

@@ -1,0 +1,40 @@
+[project]
+name = "power-admin"
+version = "0.1.0"
+description = "Pull Power Platform admin data (inventory, capacity, Copilot credits, users) to a local folder or S3."
+readme = "README.md"
+license = "MIT"
+keywords = ["power-platform", "copilot-studio", "power-apps", "power-automate", "admin", "inventory", "governance"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Systems Administration",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.12",
+    "msal>=1.28",
+    "requests>=2.31",
+    "cloudpathlib[s3]>=0.18",
+]
+
+[project.urls]
+Homepage = "https://github.com/emptymalei/power-admin"
+Issues = "https://github.com/emptymalei/power-admin/issues"
+
+[project.scripts]
+power-admin = "power_admin.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/power_admin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
